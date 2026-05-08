@@ -129,12 +129,6 @@ class Mp3Player:
             return
         self._player.audio_set_volume(max(0, min(100, int(volume))))
 
-    def set_rate(self, rate: float) -> None:
-        safe_rate = max(0.5, min(2.0, float(rate)))
-        if self._backend == "pygame":
-            return
-        self._player.set_rate(safe_rate)
-
     def get_position_ms(self) -> int:
         if self._backend == "pygame":
             if self._paused:

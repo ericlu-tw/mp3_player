@@ -9,11 +9,11 @@ from .config import EXPORT_DIR, ensure_dirs
 from .time_utils import format_ms
 
 
-def export_markdown(source: dict[str, Any], transcript: dict[str, Any] | None, analysis: dict[str, Any] | None) -> Path:
+def export_markdown(source: dict[str, Any], transcript: dict[str, Any] | None, analysis: dict[str, Any] | None, save_path: Path | None = None) -> Path:
     ensure_dirs()
     title = str(source.get("title") or source.get("id") or "audio")
     safe_title = "".join(char if char.isalnum() or char in "-_" else "_" for char in title)[:80]
-    path = EXPORT_DIR / f"{safe_title}.md"
+    path = save_path if save_path else EXPORT_DIR / f"{safe_title}.md"
     lines = [f"# {title}", ""]
     if source.get("source_url"):
         lines.extend([f"來源：{source.get('source_url')}", ""])
@@ -44,11 +44,11 @@ def export_markdown(source: dict[str, Any], transcript: dict[str, Any] | None, a
     return path
 
 
-def export_json(source: dict[str, Any], transcript: dict[str, Any] | None, analysis: dict[str, Any] | None) -> Path:
+def export_json(source: dict[str, Any], transcript: dict[str, Any] | None, analysis: dict[str, Any] | None, save_path: Path | None = None) -> Path:
     ensure_dirs()
     title = str(source.get("title") or source.get("id") or "audio")
     safe_title = "".join(char if char.isalnum() or char in "-_" else "_" for char in title)[:80]
-    path = EXPORT_DIR / f"{safe_title}.json"
+    path = save_path if save_path else EXPORT_DIR / f"{safe_title}.json"
     payload = {"source": source, "transcript": transcript, "analysis": analysis}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path

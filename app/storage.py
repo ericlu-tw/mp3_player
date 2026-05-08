@@ -86,6 +86,9 @@ def upsert_audio_source(source: dict[str, Any]) -> dict[str, Any]:
     existing = library.get(audio_id, {})
     merged = dict(existing)
     merged.update(source)
+    # Preserve analysis_status if already set, to avoid resetting completed analyses on re-load
+    if existing.get("analysis_status") and not source.get("analysis_status"):
+        merged["analysis_status"] = existing["analysis_status"]
     merged.setdefault("created_ts", int(time.time()))
     merged["updated_ts"] = int(time.time())
     library[audio_id] = merged

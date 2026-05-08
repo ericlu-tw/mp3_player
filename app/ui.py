@@ -200,13 +200,7 @@ class Mp3InsightApp:
         ttk.Label(ctrl_row, text="音量").pack(side="left", padx=(0, 4))
         self.volume_var = tk.IntVar(value=int(self.settings.get("volume", 80)))
         ttk.Scale(ctrl_row, from_=0, to=100, variable=self.volume_var,
-                  command=self._set_volume, length=100).pack(side="left", padx=(0, 8))
-        ttk.Label(ctrl_row, text="倍速").pack(side="left", padx=(0, 4))
-        self.rate_var = tk.StringVar(value=str(self.settings.get("playback_rate", 1.0)))
-        rate_combo = ttk.Combobox(ctrl_row, textvariable=self.rate_var,
-                                  values=["0.75", "1.0", "1.25", "1.5", "2.0"], width=6, state="readonly")
-        rate_combo.pack(side="left", padx=(0, PAD))
-        rate_combo.bind("<<ComboboxSelected>>", lambda _e: self._set_rate())
+                  command=self._set_volume, length=100).pack(side="left", padx=(0, PAD))
 
     def _build_player_tab(self) -> None:
         source_frame = ttk.LabelFrame(self.player_tab, text="音訊來源")
@@ -316,9 +310,12 @@ class Mp3InsightApp:
         ttk.Label(self.settings_tab, text=note, wraplength=900, style="Status.TLabel").pack(fill="x", padx=PAD)
 
     def _scan_workspace_audio(self) -> None:
+        library = storage.load_library()
         for path in Path.cwd().glob("*.mp3"):
             try:
-                storage.upsert_audio_source(source_manager.register_local_file(str(path)))
+                source = source_manager.register_local_file(str(path))
+                if str(source["id"]) not in library:
+                    storage.upsert_audio_source(source)
             except Exception:
                 continue
 
@@ -437,7 +434,6 @@ class Mp3InsightApp:
         try:
             self.player.load(str(source.get("local_path") or source.get("source_url")))
             self.player.set_volume(self.volume_var.get())
-            self.player.set_rate(float(self.rate_var.get()))
             resume_ms = int(source.get("last_position_ms", 0) or 0)
             duration_ms = int(source.get("duration_ms", 0) or 0)
             if duration_ms and resume_ms >= duration_ms - 1000:
@@ -498,10 +494,6 @@ class Mp3InsightApp:
     def _set_volume(self, _value=None) -> None:
         if self.player:
             self.player.set_volume(self.volume_var.get())
-
-    def _set_rate(self) -> None:
-        if self.player:
-            self.player.set_rate(float(self.rate_var.get()))
 
     def _update_player_tick(self) -> None:
         if self.player:
@@ -699,10 +691,28 @@ class Mp3InsightApp:
         if not self.current_source:
             messagebox.showinfo("提示", "請先載入音訊。")
             return
+        title = str(self.current_source.get("title") or self.current_source.get("id") or "audio")
+        safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:80]
         if export_type == "md":
-            path = exporter.export_markdown(self.current_source, self.current_transcript, self.current_analysis)
+            save_path = filedialog.asksaveasfilename(
+                title="匯出 Markdown",
+                initialfile=f"{safe_title}.md",
+                defaultextension=".md",
+                filetypes=[("Markdown 檔案", "*.md"), ("所有檔案", "*.*")],
+            )
+            if not save_path:
+                return
+            path = exporter.export_markdown(self.current_source, self.current_transcript, self.current_analysis, save_path=Path(save_path))
         else:
-            path = exporter.export_json(self.current_source, self.current_transcript, self.current_analysis)
+            save_path = filedialog.asksaveasfilename(
+                title="匯出 JSON",
+                initialfile=f"{safe_title}.json",
+                defaultextension=".json",
+                filetypes=[("JSON 檔案", "*.json"), ("所有檔案", "*.*")],
+            )
+            if not save_path:
+                return
+            path = exporter.export_json(self.current_source, self.current_transcript, self.current_analysis, save_path=Path(save_path))
         self.status_var.set(f"已匯出：{path}")
 
     def _save_settings(self, show_message: bool = True) -> None:
@@ -714,7 +724,6 @@ class Mp3InsightApp:
             "auto_resume": bool(self.auto_resume_var.get()),
             "privacy_acknowledged": bool(self.privacy_var.get()),
             "volume": int(self.volume_var.get()),
-            "playback_rate": float(self.rate_var.get()),
         })
         storage.save_settings(self.settings)
         self._apply_style()
