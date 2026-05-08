@@ -170,7 +170,9 @@ class Mp3InsightApp:
         title_row = ttk.Frame(panel)
         title_row.pack(fill="x", padx=PAD, pady=(4, 0))
         self.now_playing_var = tk.StringVar(value="尚未載入音訊")
-        ttk.Label(title_row, textvariable=self.now_playing_var, style="Header.TLabel").pack(side="left")
+        self.lbl_now_playing = ttk.Label(title_row, textvariable=self.now_playing_var, style="Header.TLabel")
+        self.lbl_now_playing.pack(side="left")
+        self.lbl_now_playing.bind("<Button-3>", lambda _e: self._rename_current_title())
 
         # Progress row
         prog_row = ttk.Frame(panel)
@@ -236,6 +238,7 @@ class Mp3InsightApp:
         self.library_tree.bind("<Button-3>", self._show_library_menu)
         self.library_menu = tk.Menu(self.root, tearoff=0)
         self.library_menu.add_command(label="載入", command=self._load_selected_library_item)
+        self.library_menu.add_command(label="重新命名", command=self._rename_selected_library_item)
         self.library_menu.add_command(label="重新分析", command=self._analyze_selected_library_item)
         self.library_menu.add_command(label="刪除檔案與分析資料", command=self._delete_selected_library_item)
 
@@ -335,6 +338,47 @@ class Mp3InsightApp:
                 status,
                 _fmt_ts(entry.get("last_played_ts")),
             ))
+
+    def _rename_selected_library_item(self) -> None:
+        from tkinter import simpledialog
+        selected = self.library_tree.selection()
+        if not selected:
+            return
+        audio_id = selected[0]
+        source = storage.load_library().get(audio_id)
+        if not source:
+            return
+        current = str(source.get("title", ""))
+        new_name = simpledialog.askstring("重新命名", "請輸入新標題：", initialvalue=current, parent=self.root)
+        if new_name is None:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        source["title"] = new_name
+        storage.upsert_audio_source(source)
+        if self.current_source and str(self.current_source.get("id")) == audio_id:
+            self.current_source["title"] = new_name
+            self.now_playing_var.set(new_name)
+        self._refresh_library()
+        self.status_var.set(f"已重新命名：{new_name}")
+
+    def _rename_current_title(self) -> None:
+        if not self.current_source:
+            return
+        from tkinter import simpledialog
+        current = str(self.current_source.get("title", ""))
+        new_name = simpledialog.askstring("改檔名", "請輸入新標題：", initialvalue=current, parent=self.root)
+        if new_name is None:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        self.current_source["title"] = new_name
+        storage.upsert_audio_source(self.current_source)
+        self.now_playing_var.set(new_name)
+        self._refresh_library()
+        self.status_var.set(f"已重新命名：{new_name}")
 
     def _show_library_menu(self, event) -> None:
         item_id = self.library_tree.identify_row(event.y)
