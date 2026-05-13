@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
 from . import api_client, exporter, source_manager, storage
-from .config import AVAILABLE_ASR_MODELS, AVAILABLE_CHAT_MODELS, WINDOW_GEOMETRY, ensure_dirs
+from .config import AVAILABLE_ASR_MODELS, AVAILABLE_CHAT_MODELS, AVAILABLE_LANGUAGES, WINDOW_GEOMETRY, ensure_dirs
 from .player_engine import Mp3Player, PlayerError
 from .time_utils import format_ms
 
@@ -67,6 +67,7 @@ class Mp3InsightApp:
         self._seeking = False
         self._last_saved_second = 0
         self._player_error = ""
+        self._analyzing_id: str | None = None
         try:
             self.player = Mp3Player()
         except PlayerError as exc:
@@ -286,21 +287,27 @@ class Mp3InsightApp:
         ttk.Label(form, text="ASR 模型（本機）：").grid(row=0, column=0, sticky="w", pady=PAD)
         self.asr_model_var = tk.StringVar(value=str(self.settings.get("asr_model", "tiny")))
         ttk.Combobox(form, textvariable=self.asr_model_var, values=AVAILABLE_ASR_MODELS, state="readonly").grid(row=0, column=1, sticky="ew", pady=PAD)
-        ttk.Label(form, text="Hugging Face Token（僅重點分析需要）：").grid(row=1, column=0, sticky="w", pady=PAD)
+        lang_label_by_code = {code: label for label, code in AVAILABLE_LANGUAGES}
+        lang_labels = [label for label, _code in AVAILABLE_LANGUAGES]
+        saved_lang = str(self.settings.get("language", "auto"))
+        ttk.Label(form, text="轉錄語言：").grid(row=1, column=0, sticky="w", pady=PAD)
+        self.language_var = tk.StringVar(value=lang_label_by_code.get(saved_lang, "自動偵測"))
+        ttk.Combobox(form, textvariable=self.language_var, values=lang_labels, state="readonly").grid(row=1, column=1, sticky="ew", pady=PAD)
+        ttk.Label(form, text="Hugging Face Token（僅重點分析需要）：").grid(row=2, column=0, sticky="w", pady=PAD)
         self.token_var = tk.StringVar(value=str(self.settings.get("hf_token", "")))
-        ttk.Entry(form, textvariable=self.token_var, show="*", width=54).grid(row=1, column=1, sticky="ew", pady=PAD)
-        ttk.Label(form, text="分析模型：").grid(row=2, column=0, sticky="w", pady=PAD)
+        ttk.Entry(form, textvariable=self.token_var, show="*", width=54).grid(row=2, column=1, sticky="ew", pady=PAD)
+        ttk.Label(form, text="分析模型：").grid(row=3, column=0, sticky="w", pady=PAD)
         self.chat_model_var = tk.StringVar(value=str(self.settings.get("chat_model", "")))
-        ttk.Combobox(form, textvariable=self.chat_model_var, values=AVAILABLE_CHAT_MODELS).grid(row=2, column=1, sticky="ew", pady=PAD)
-        ttk.Label(form, text="主題：").grid(row=3, column=0, sticky="w", pady=PAD)
+        ttk.Combobox(form, textvariable=self.chat_model_var, values=AVAILABLE_CHAT_MODELS).grid(row=3, column=1, sticky="ew", pady=PAD)
+        ttk.Label(form, text="主題：").grid(row=4, column=0, sticky="w", pady=PAD)
         theme_label = THEME_LABEL_BY_NAME.get(str(self.settings.get("theme", "light")), "淺色 Light")
         self.theme_var = tk.StringVar(value=theme_label)
-        ttk.Combobox(form, textvariable=self.theme_var, values=[label for label, _name in THEME_OPTIONS], state="readonly").grid(row=3, column=1, sticky="ew", pady=PAD)
+        ttk.Combobox(form, textvariable=self.theme_var, values=[label for label, _name in THEME_OPTIONS], state="readonly").grid(row=4, column=1, sticky="ew", pady=PAD)
         self.auto_resume_var = tk.BooleanVar(value=bool(self.settings.get("auto_resume", True)))
-        ttk.Checkbutton(form, text="載入音訊時自動從上次位置續播", variable=self.auto_resume_var).grid(row=4, column=1, sticky="w", pady=PAD)
+        ttk.Checkbutton(form, text="載入音訊時自動從上次位置續播", variable=self.auto_resume_var).grid(row=5, column=1, sticky="w", pady=PAD)
         self.privacy_var = tk.BooleanVar(value=bool(self.settings.get("privacy_acknowledged", False)))
-        ttk.Checkbutton(form, text="我了解重點分析會將逐字稿送到雲端 HF API（轉錄在本機執行）", variable=self.privacy_var).grid(row=5, column=1, sticky="w", pady=PAD)
-        ttk.Button(form, text="儲存設定", command=self._save_settings, style="Accent.TButton").grid(row=6, column=1, sticky="e", pady=PAD)
+        ttk.Checkbutton(form, text="我了解重點分析會將逐字稿送到雲端 HF API（轉錄在本機執行）", variable=self.privacy_var).grid(row=6, column=1, sticky="w", pady=PAD)
+        ttk.Button(form, text="儲存設定", command=self._save_settings, style="Accent.TButton").grid(row=7, column=1, sticky="e", pady=PAD)
         form.columnconfigure(1, weight=1)
 
         note = (
@@ -508,11 +515,16 @@ class Mp3InsightApp:
                     storage.update_playback_state(str(self.current_source["id"]), position, duration)
             except Exception:
                 pass
+        storage.flush_library()
         self.root.after(500, self._update_player_tick)
 
     def _analyze_current(self) -> None:
         if not self.current_source:
             messagebox.showinfo("提示", "請先載入音訊。")
+            return
+        audio_id = str(self.current_source["id"])
+        if self._analyzing_id == audio_id:
+            self.status_var.set("此音訊正在分析中，請稍候。")
             return
         self._save_settings(show_message=False)
         if not str(self.settings.get("asr_model", "")).strip():
@@ -524,12 +536,14 @@ class Mp3InsightApp:
             messagebox.showwarning("找不到音訊快取", "請重新載入網址或本地檔後再分析。")
             return
         source = dict(self.current_source)
+        self._analyzing_id = audio_id
 
         def worker() -> None:
-            audio_id = str(source["id"])
+            aid = str(source["id"])
             try:
-                storage.update_analysis_status(audio_id, "transcribing")
+                storage.update_analysis_status(aid, "transcribing")
                 model_size = self.settings.get("asr_model", "tiny")
+                language = self.settings.get("language", "auto")
                 self._thread_status(f"準備 Whisper {model_size} 模型...")
                 transcript = api_client.transcribe_audio(
                     hf_token=self.settings.get("hf_token", ""),
@@ -537,24 +551,27 @@ class Mp3InsightApp:
                     audio_path=str(source.get("local_path", "")),
                     duration_ms=int(source.get("duration_ms", 0) or 0),
                     status_callback=self._thread_status,
+                    language=language,
                 )
-                storage.save_transcript(audio_id, transcript)
+                storage.save_transcript(aid, transcript)
                 used_model = str(transcript.get("asr_model", self.settings.get("asr_model", "")))
-                storage.update_analysis_status(audio_id, "analyzing")
+                storage.update_analysis_status(aid, "analyzing")
                 self._thread_status(f"轉錄完成（ASR: {used_model}），擷取關鍵詞與重點句...")
                 analysis = api_client.analyze_transcript(
                     hf_token=self.settings.get("hf_token", ""),
                     chat_model=self.settings.get("chat_model", ""),
                     chunks=transcript.get("chunks", []),
                 )
-                storage.save_analysis(audio_id, analysis)
+                storage.save_analysis(aid, analysis)
                 self.root.after(0, self._analysis_completed, transcript, analysis)
             except Exception as exc:
                 message = str(exc)
-                storage.update_analysis_status(audio_id, "failed", message)
+                storage.update_analysis_status(aid, "failed", message)
                 self.root.after(0, self.status_var.set, f"分析失敗：{message}")
                 self.root.after(0, messagebox.showerror, "分析失敗", message)
                 self.root.after(0, self._refresh_library)
+            finally:
+                self._analyzing_id = None
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -716,6 +733,7 @@ class Mp3InsightApp:
         self.status_var.set(f"已匯出：{path}")
 
     def _save_settings(self, show_message: bool = True) -> None:
+        lang_code_by_label = {label: code for label, code in AVAILABLE_LANGUAGES}
         self.settings.update({
             "hf_token": self.token_var.get().strip(),
             "asr_model": self.asr_model_var.get().strip(),
@@ -724,6 +742,7 @@ class Mp3InsightApp:
             "auto_resume": bool(self.auto_resume_var.get()),
             "privacy_acknowledged": bool(self.privacy_var.get()),
             "volume": int(self.volume_var.get()),
+            "language": lang_code_by_label.get(self.language_var.get(), "auto"),
         })
         storage.save_settings(self.settings)
         self._apply_style()
@@ -733,12 +752,48 @@ class Mp3InsightApp:
 
     def _on_close(self) -> None:
         self._save_settings(show_message=False)
+        storage.flush_library()
         if self.player:
             self.player.release()
         self.root.destroy()
 
+    # ------------------------------------------------------------------
+    # Drag-and-drop support (requires tkinterdnd2; gracefully skipped
+    # when the package is unavailable)
+    # ------------------------------------------------------------------
+    def _init_dnd(self) -> None:
+        """Register the window as a file-drop target if tkinterdnd2 is available."""
+        try:
+            from tkinterdnd2 import DND_FILES  # type: ignore[import-untyped]
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception:
+            pass  # tkinterdnd2 not installed or Tk not built with DnD — degrade silently
+
+    def _on_drop(self, event) -> None:
+        """Handle files dropped onto the window."""
+        raw: str = event.data or ""
+        # Windows wraps paths with spaces in {}, and may deliver multiple files.
+        paths: list[str] = []
+        for token in raw.replace("{", "").replace("}", "").split():
+            token = token.strip()
+            if token:
+                paths.append(token)
+        audio_paths = [p for p in paths if Path(p).suffix.lower() in {".mp3", ".wav", ".flac", ".m4a", ".ogg"}]
+        if not audio_paths:
+            self.status_var.set("請拖放支援的音訊檔案（.mp3 .wav .flac .m4a .ogg）。")
+            return
+        # Load the first valid audio file
+        first = audio_paths[0]
+        self._run_background("載入拖放檔案", lambda: source_manager.register_local_file(first), self._on_source_loaded)
+
 
 def run() -> None:
-    root = tk.Tk()
-    Mp3InsightApp(root)
+    try:
+        from tkinterdnd2 import TkinterDnD  # type: ignore[import-untyped]
+        root = TkinterDnD.Tk()
+    except Exception:
+        root = tk.Tk()
+    app = Mp3InsightApp(root)
+    app._init_dnd()
     root.mainloop()

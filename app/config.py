@@ -43,6 +43,15 @@ AVAILABLE_CHAT_MODELS = [
     "google/gemma-2-9b-it",
 ]
 
+# Language choices for transcription; "auto" lets faster-whisper detect.
+AVAILABLE_LANGUAGES = [
+    ("自動偵測", "auto"),
+    ("中文", "zh"),
+    ("English", "en"),
+    ("日本語", "ja"),
+    ("한국어", "ko"),
+]
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

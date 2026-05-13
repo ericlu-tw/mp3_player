@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -9,15 +10,28 @@ from typing import Callable
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .config import AUDIO_CACHE_DIR, ensure_dirs
 
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[str], None]
 
 
 class SourceError(Exception):
     pass
+
+
+def _http_session() -> requests.Session:
+    """Return a ``requests.Session`` with automatic retry on transient errors."""
+    session = requests.Session()
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
 
 
 def _sha1_file(path: Path) -> str:
@@ -41,13 +55,14 @@ def _duration_ms(path: Path) -> int:
         if media is not None and media.info and getattr(media.info, "length", None):
             return int(float(media.info.length) * 1000)
     except Exception:
-        pass
+        logger.debug("mutagen.File failed for %s", path, exc_info=True)
     try:
         from mutagen.mp3 import MP3
         media = MP3(str(path))
         if media is not None and media.info and getattr(media.info, "length", None):
             return int(float(media.info.length) * 1000)
     except Exception:
+        logger.debug("mutagen.mp3 fallback failed for %s", path, exc_info=True)
         return 0
     return 0
 
@@ -82,8 +97,9 @@ def download_url(url: str, on_progress: ProgressCallback | None = None) -> dict:
         raise SourceError("請輸入有效的 http 或 https MP3 網址。")
     if on_progress:
         on_progress("連線到音訊來源...")
+    session = _http_session()
     try:
-        response = requests.get(cleaned_url, stream=True, timeout=30)
+        response = session.get(cleaned_url, stream=True, timeout=30)
         response.raise_for_status()
     except requests.RequestException as exc:
         raise SourceError(f"下載音訊失敗：{exc}") from exc
@@ -101,6 +117,13 @@ def download_url(url: str, on_progress: ProgressCallback | None = None) -> dict:
             if on_progress and total_bytes:
                 percent = int((downloaded / total_bytes) * 100)
                 on_progress(f"下載音訊中... {percent}%")
+
+    # Verify download completeness when Content-Length was provided
+    if total_bytes and downloaded != total_bytes:
+        temp_path.unlink(missing_ok=True)
+        raise SourceError(
+            f"下載不完整：預期 {total_bytes} 位元組，實際收到 {downloaded} 位元組。"
+        )
 
     audio_hash = _sha1_file(temp_path)
     cached_path = AUDIO_CACHE_DIR / f"{audio_hash}{suffix}"
